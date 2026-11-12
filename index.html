@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Today">
+<meta name="theme-color" content="#0d0d0d"><meta name="robots" content="noindex">
+<title>Today</title>
+<link rel="apple-touch-icon" href="icon.png">
+<style>
+html, body { margin:0; background:#0d0d0d; color:#c3c2b7; font:15px -apple-system, system-ui, sans-serif; }
+#msg { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; }
+#app { min-height:100vh; padding-top:env(safe-area-inset-top); }
+iframe { border:0; width:100%; display:block; }
+</style></head>
+<body><div id="msg">Loading your day&hellip;</div><div id="app"></div>
+<script>
+(function () {
+  var b64u = function (s) { s = s.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; var b = atob(s), a = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; };
+  // The key: from the link (#...), remembered on this device so the home-screen icon keeps working.
+  var key = (location.hash || "").slice(1);
+  try { if (key) localStorage.setItem("k", key); else key = localStorage.getItem("k") || ""; } catch (e) {}
+  // The key stays in the address on purpose: Add to Home Screen saves the address as it is, and the
+  // home-screen app has its own storage, so this is how the icon keeps working.
+  if (key && !location.hash) history.replaceState(null, "", location.pathname + "#" + key);
+  var msg = document.getElementById("msg"), app = document.getElementById("app"), shown = "";
+  if (!key) { msg.textContent = "Open this from the link your PC texted you."; return; }
+  var enc = new TextEncoder(), master = b64u(key);
+  function sub(label) { return crypto.subtle.importKey("raw", master, { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+    .then(function (k) { return crypto.subtle.sign("HMAC", k, enc.encode(label)); }); }
+  function load() {
+    return fetch("d.bin?t=" + Date.now(), { cache: "no-store" }).then(function (r) { if (!r.ok) throw new Error("not found"); return r.arrayBuffer(); })
+      .then(function (buf) {
+        var all = new Uint8Array(buf), tag = all.slice(0, 32), body = all.slice(32), iv = body.slice(0, 16), ct = body.slice(16);
+        return sub("mac").then(function (mk) { return crypto.subtle.importKey("raw", mk, { name: "HMAC", hash: "SHA-256" }, false, ["verify"]); })
+          .then(function (k) { return crypto.subtle.verify("HMAC", k, tag, body); })
+          .then(function (ok) { if (!ok) throw new Error("key"); return sub("enc"); })
+          .then(function (ek) { return crypto.subtle.importKey("raw", ek, { name: "AES-CBC" }, false, ["decrypt"]); })
+          .then(function (k) { return crypto.subtle.decrypt({ name: "AES-CBC", iv: iv }, k, ct); });
+      })
+      .then(function (plain) {
+        var html = new TextDecoder().decode(plain);
+        if (html === shown) return; shown = html;
+        // The full dashboard (it has its own scripts and reloads itself, which comes back through here).
+        if (html.indexOf("window.REMOTE") >= 0) { document.open(); document.write(html); document.close(); return; }
+        // Shown in a frame with scripts off: the page is plain HTML and CSS.
+        var f = document.createElement("iframe"); f.setAttribute("sandbox", "allow-same-origin"); f.setAttribute("scrolling", "no");
+        f.srcdoc = html.replace("</head>", "<style>body{min-height:0 !important}</style></head>");
+        f.onload = function () { try { var d = f.contentDocument; f.style.height = "10px"; f.style.height = Math.max(d.body.scrollHeight, innerHeight) + "px";
+          var bg = getComputedStyle(d.body).backgroundColor; document.body.style.background = bg; } catch (e) {} };
+        app.innerHTML = ""; app.appendChild(f); msg.style.display = "none";
+      })
+      .catch(function (e) { if (!shown) msg.textContent = e.message === "key" ? "This link's key doesn't match. Ask your PC for a new link: type phone link." : "Couldn't load your day. Pull down to try again."; });
+  }
+  load(); setInterval(load, 5 * 60 * 1000);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) load(); });
+})();
+</script></body></html>
